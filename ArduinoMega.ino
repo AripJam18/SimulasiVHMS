@@ -12,7 +12,7 @@ const uint8_t maxMsgLen = 100;
 
 void setup() {
   Serial.begin(9600);
-  Serial2.begin(9600);  // Initialize Serial2 if you're using it
+  Serial2.begin(9600);  // Serial2 pin 16 dan 17 (pin 16 sambung ke pin 4 esp32 dan pin 17 sambung ke pin 5 esp32 client)
 
   Serial.println(F("Starting..."));
 
