@@ -6,7 +6,7 @@ const char* ssid = "ESP32-Server";
 const char* password = "password123";
 const char* host = "192.168.4.1";  // IP address of the server
 
-#define RX1 4 // Pin untuk komunikasi dengan Arduino Mega
+#define RX1 4 // Pin untuk komunikasi dengan Arduino Mega (pin 16 sambung ke pin 4 esp32 dan pin 17 sambung ke pin 5 esp32 client)
 #define TX1 5
 //HardwareSerial Serial1(1);
 
