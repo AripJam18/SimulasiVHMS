@@ -1,24 +1,40 @@
 #include <WiFi.h>
 #include "Nextion.h"
 #include <Wire.h>
+#include <SoftwareSerial.h>
+#include "Adafruit_Thermal.h"
 
+// WiFi credentials
 const char* ssid = "ESP32-Server";
 const char* password = "password123";
-const char* host = "192.168.4.1";  // IP address of the server
+const char* host = "192.168.4.1";
 
-#define RX1 4 // Pin untuk komunikasi dengan Arduino Mega (pin 16 sambung ke pin 4 esp32 dan pin 17 sambung ke pin 5 esp32 client)
+// Pin configurations
+#define RX1 4  // Communication with Arduino Mega
 #define TX1 5
-//HardwareSerial Serial1(1);
-
-#define RX2 16 // Pin untuk komunikasi dengan Nextion
+#define RX2 16 // Communication with Nextion
 #define TX2 17
+#define PRINTER_RX 27 // Printer RX
+#define PRINTER_TX 14 // Printer TX
 
+// SoftwareSerial and Printer
+SoftwareSerial printerSerial(PRINTER_RX, PRINTER_TX);
+Adafruit_Thermal printer(&printerSerial);
+
+// WiFi and client
 WiFiClient client;
-String serialData = "";  // Variabel untuk menyimpan data dari Serial1
-bool shouldSendData = false;  // Flag untuk mengatur apakah data harus dikirim
-unsigned long startTime = 0;  // Untuk menghitung waktu autostop
 
-// Objek Nextion untuk tombol dan teks
+// Buffers and variables
+#define BUFFER_SIZE 10
+String payloadBuffer[BUFFER_SIZE];
+int bufferIndex = 0;
+bool shouldSendData = false;
+unsigned long startTime = 0;
+
+// Unit name for the printer header
+const char* unitName = "HD78140KM";
+
+// Nextion components
 NexButton BtnStart = NexButton(0, 1, "BtnStart");
 NexButton BtnStop = NexButton(0, 2, "BtnStop");
 NexText TxtStatus = NexText(0, 3, "TxtStatus");
@@ -26,42 +42,45 @@ NexText TxtSSID = NexText(0, 4, "TxtSSID");
 NexText TxtData = NexText(0, 5, "TxtData");
 NexText TxtKirim = NexText(0, 6, "TxtKirim");
 
-// Register tombol Nextion ke event list
 NexTouch *nex_listen_list[] = {
   &BtnStart,
   &BtnStop,
   NULL
 };
 
-// Status state machine
+// States
 enum State {
   IDLE,
   CONNECTING,
   TRANSMITTING,
   DISCONNECTED
 };
+State currentState = IDLE;
 
-State currentState = IDLE;  // Mulai dengan status IDLE
-
-// Callback untuk tombol START
+// Button callbacks
 void BtnStartPopCallback(void *ptr) {
   Serial.println("BtnStartPopCallback");
   TxtSSID.setText("Connecting to WiFi...");
   currentState = CONNECTING;
   TxtStatus.setText("CONNECTING");
+
+  for (int i = 0; i < BUFFER_SIZE; i++) {
+    payloadBuffer[i] = "";
+  }
+  bufferIndex = 0;
 }
 
-// Callback untuk tombol STOP
 void BtnStopPopCallback(void *ptr) {
   Serial.println("BtnStopPopCallback");
   stopConnection();
+  printLast10Data();
 }
 
-// Fungsi reconnect ke server
+// Reconnect to server
 void reconnect() {
   TxtStatus.setText("Reconnecting to server...");
   Serial.println("Attempting to reconnect to server...");
-  
+
   int retries = 0;
   const int maxRetries = 5;
   while (!client.connect(host, 80)) {
@@ -79,7 +98,7 @@ void reconnect() {
   currentState = TRANSMITTING;
 }
 
-// Fungsi untuk menghentikan koneksi
+// Stop connection
 void stopConnection() {
   TxtSSID.setText("Stopping connection...");
   shouldSendData = false;
@@ -101,15 +120,19 @@ void stopConnection() {
 
 void setup() {
   Serial.begin(115200);
-  
-  // Arduino Mega
+
+  // Serial for Arduino Mega
   Serial1.begin(9600, SERIAL_8N1, RX1, TX1);
 
-  // Nextion
+  // Serial for Nextion
   Serial2.begin(9600, SERIAL_8N1, RX2, TX2);
   nexInit();
 
-  // Daftarkan event tombol ke callback
+  // Printer initialization
+  printerSerial.begin(9600);
+  printer.begin();
+
+  // Register button callbacks
   BtnStart.attachPop(BtnStartPopCallback, &BtnStart);
   BtnStop.attachPop(BtnStopPopCallback, &BtnStop);
 
@@ -117,8 +140,8 @@ void setup() {
   Serial.println("System ready.");
 }
 
-void loop() { 
-  nexLoop(nex_listen_list);  // Cek event dari Nextion
+void loop() {
+  nexLoop(nex_listen_list);
 
   switch (currentState) {
     case IDLE:
@@ -131,21 +154,21 @@ void loop() {
       unsigned long wifiTimeout = millis();
       WiFi.begin(ssid, password);
 
-      while (WiFi.status() != WL_CONNECTED && millis() - wifiTimeout < 10000) {  // Timeout 10 detik
+      while (WiFi.status() != WL_CONNECTED && millis() - wifiTimeout < 10000) {
         delay(1000);
         TxtSSID.setText("Connecting to WiFi...");
       }
 
       if (WiFi.status() == WL_CONNECTED) {
-        TxtSSID.setText(WiFi.SSID().c_str());  // Tampilkan nama SSID yang terhubung
+        TxtSSID.setText(WiFi.SSID().c_str());
         Serial.printf("Connected to WiFi: %s\n", WiFi.SSID().c_str());
         TxtStatus.setText("TRANSMITTING");
         startTime = millis();
         shouldSendData = true;
-        currentState = TRANSMITTING;  // Pindah ke state TRANSMITTING setelah berhasil
+        currentState = TRANSMITTING;
       } else {
         TxtSSID.setText("WiFi connection failed.");
-        currentState = IDLE;  // Jika gagal, kembali ke state IDLE
+        currentState = IDLE;
         TxtStatus.setText("IDLE");
       }
       break;
@@ -153,32 +176,50 @@ void loop() {
 
     case TRANSMITTING:
       TxtStatus.setText("TRANSMITTING");
-      
-      // Baca data dari Serial1
+
       if (Serial1.available()) {
-        serialData = Serial1.readStringUntil('\n');
+        String serialData = Serial1.readStringUntil('\n');
         if (!serialData.isEmpty()) {
-          TxtData.setText(serialData.c_str());  // Tampilkan data yang diterima dari Arduino Mega
+          TxtData.setText(serialData.c_str());
           Serial.printf("Received data: %s\n", serialData.c_str());
+
+          // Extract payload (pl) from serialData
+          String parts[6];
+          int index = 0;
+          while (serialData.indexOf('-') > 0 && index < 5) {
+            int pos = serialData.indexOf('-');
+            parts[index] = serialData.substring(0, pos);
+            serialData = serialData.substring(pos + 1);
+            index++;
+          }
+          parts[index] = serialData;
+
+          // Save only the payload (parts[4]) to buffer
+          if (bufferIndex < BUFFER_SIZE) {
+            payloadBuffer[bufferIndex++] = parts[4];
+          } else {
+            for (int i = 1; i < BUFFER_SIZE; i++) {
+              payloadBuffer[i - 1] = payloadBuffer[i];
+            }
+            payloadBuffer[BUFFER_SIZE - 1] = parts[4];
+          }
         }
       }
 
-      // Kirim data ke server
-      if (client.connected() && shouldSendData && !serialData.isEmpty()) {
-        Serial.printf("Sending data to server: %s\n", serialData.c_str());
-        if (client.println(serialData)) {
-          TxtKirim.setText(serialData.c_str());  // Tampilkan data yang dikirim ke server
+      if (client.connected() && shouldSendData && bufferIndex > 0) {
+        String payload = payloadBuffer[bufferIndex - 1];
+        Serial.printf("Sending data to server: %s\n", payload.c_str());
+        if (client.println(payload)) {
+          TxtKirim.setText(payload.c_str());
         } else {
           TxtKirim.setText("Send failed");
           Serial.println("Send failed");
-          reconnect();  // Coba reconnect jika pengiriman gagal
+          reconnect();
         }
-        serialData = "";  // Kosongkan buffer setelah pengiriman
       }
 
-      // Cek koneksi server secara berkala
       static unsigned long lastCheck = 0;
-      if (millis() - lastCheck > 5000) {  // Cek koneksi setiap 5 detik
+      if (millis() - lastCheck > 5000) {
         lastCheck = millis();
         if (!client.connected()) {
           TxtStatus.setText("Server disconnected.");
@@ -193,6 +234,27 @@ void loop() {
       stopConnection();
       break;
   }
-  delay(1000);  // Tambahkan sedikit delay untuk mengurangi beban CPU
+  delay(1000);
 }
 
+void printLast10Data() {
+  printer.justify('C');
+  printer.setSize('M');
+  printer.println(unitName);
+  printer.println("--------------------------");
+  printer.justify('L');
+  printer.setSize('S');
+  printer.println("TIME     RIT     PAYLOAD");
+  printer.println("--------------------------");
+
+  for (int i = 0; i < BUFFER_SIZE; i++) {
+    if (!payloadBuffer[i].isEmpty()) {
+      printer.printf("09:00    1       %s\n", payloadBuffer[i].c_str());
+    }
+  }
+
+  printer.println("");
+  printer.sleep();
+}
+
+//tambahan fungsi cetak dengan printer thermal di pin 14 dan 27
