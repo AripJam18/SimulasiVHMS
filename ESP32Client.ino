@@ -5,9 +5,8 @@
 #include "Adafruit_Thermal.h"
 
 // WiFi credentials
-const char* ssid = "ESP32-Server";
 const char* password = "password123";
-const char* host = "192.168.4.1";
+char selectedSSID[32] = "";  // Placeholder for selected SSID
 
 // Pin configurations
 #define RX1 4  // Communication with Arduino Mega
@@ -37,14 +36,19 @@ const char* unitName = "HD78140KM";
 // Nextion components
 NexButton BtnStart = NexButton(0, 1, "BtnStart");
 NexButton BtnStop = NexButton(0, 2, "BtnStop");
-NexText TxtStatus = NexText(0, 3, "TxtStatus");
-NexText TxtSSID = NexText(0, 4, "TxtSSID");
-NexText TxtData = NexText(0, 5, "TxtData");
-NexText TxtKirim = NexText(0, 6, "TxtKirim");
+NexButton BtnScan = NexButton(0, 25, "BtnScan"); // New Scan button
+NexCombo CmbSSID = NexCombo(0, 30, "CmbSSID");   // New ComboBox
+NexText TxtStatus = NexText(0, 28, "TxtStatus");
+NexText TxtSSID = NexText(0, 29, "TxtSSID");
+NexText TxtData = NexText(0, 10, "TxtData");
+NexText TxtKirim = NexText(0, 12, "TxtKirim");
+NexText TxtJam = NexText(0, 3, "TxtJam ");
+NexNumber nRit= NexNumber(0, 27, "nRit");
 
 NexTouch *nex_listen_list[] = {
   &BtnStart,
   &BtnStop,
+  &BtnScan,
   NULL
 };
 
@@ -58,8 +62,59 @@ enum State {
 State currentState = IDLE;
 
 // Button callbacks
+#include <vector> // Untuk menyimpan SSID sementara
+void BtnScanPopCallback(void *ptr) {
+  Serial.println("BtnScanPopCallback");
+
+  // Menampilkan status "Scanning..." di layar Nextion
+  TxtStatus.setText("Scanning for SSIDs...");
+
+  // Memindai jaringan Wi-Fi
+  int n = WiFi.scanNetworks();
+  if (n == 0) {
+    TxtStatus.setText("No networks found.");
+    return;
+  }
+
+  // Membuat string SSID dengan pemisah newline (\r\n)
+  String SSIDs = "";
+  for (int i = 0; i < n; ++i) {
+    if (i > 0) SSIDs += "\r\n";  // Tambahkan newline setelah SSID pertama
+    SSIDs += WiFi.SSID(i);
+    Serial.println(WiFi.SSID(i));  // Debugging: Cetak SSID ke Serial Monitor
+  }
+
+  // Mengirim jumlah jaringan ke properti .txt ComboBox
+  String cmdTxt = String("CmbSSID.txt=\"") + String(n) + " Networks\"";
+  sendCommand(cmdTxt.c_str());
+
+  // Mengirim daftar SSID ke properti .path ComboBox
+  String cmdPath = String("CmbSSID.path=\"") + SSIDs + "\"";
+  sendCommand(cmdPath.c_str());
+
+  // Menunggu Nextion untuk memproses perintah
+  if (!recvRetCommandFinished()) {
+    Serial.println("Error updating ComboBox.");
+    TxtStatus.setText("Error updating ComboBox.");
+    return;
+  }
+
+  // Memperbarui status menjadi "Scan complete"
+  TxtStatus.setText("Scan complete. Select SSID.");
+}
+
+
+
 void BtnStartPopCallback(void *ptr) {
   Serial.println("BtnStartPopCallback");
+  CmbSSID.getSelectedText(selectedSSID, sizeof(selectedSSID));
+
+  if (strcmp(selectedSSID, "Select SSID") == 0 || strlen(selectedSSID) == 0) {
+    TxtStatus.setText("Select a valid SSID.");
+    return;
+  }
+
+  Serial.printf("Selected SSID: %s\n", selectedSSID);
   TxtSSID.setText("Connecting to WiFi...");
   currentState = CONNECTING;
   TxtStatus.setText("CONNECTING");
@@ -76,14 +131,13 @@ void BtnStopPopCallback(void *ptr) {
   printLast10Data();
 }
 
-// Reconnect to server
 void reconnect() {
   TxtStatus.setText("Reconnecting to server...");
   Serial.println("Attempting to reconnect to server...");
 
   int retries = 0;
   const int maxRetries = 5;
-  while (!client.connect(host, 80)) {
+  while (!client.connect("192.168.4.1", 80)) {
     retries++;
     Serial.printf("Reconnect attempt %d/%d\n", retries, maxRetries);
     TxtStatus.setText("Reconnecting...");
@@ -98,7 +152,6 @@ void reconnect() {
   currentState = TRANSMITTING;
 }
 
-// Stop connection
 void stopConnection() {
   TxtSSID.setText("Stopping connection...");
   shouldSendData = false;
@@ -131,12 +184,24 @@ void setup() {
   // Printer initialization
   printerSerial.begin(9600);
   printer.begin();
+  printer.justify('C');
+  printer.setSize('M');
+  printer.println(unitName);
+  printer.println("--------------------------");
+  
+  printer.justify('L');
+  printer.setSize('S');
+  printer.println("TIME     RIT     PAYLOAD");
+  printer.println("--------------------------");
+  printer.println("");
+  printer.sleep();
 
   // Register button callbacks
   BtnStart.attachPop(BtnStartPopCallback, &BtnStart);
   BtnStop.attachPop(BtnStopPopCallback, &BtnStop);
+  BtnScan.attachPop(BtnScanPopCallback, &BtnScan);
 
-  TxtStatus.setText("System ready. Press START.");
+  TxtStatus.setText("System ready. Press SCAN.");
   Serial.println("System ready.");
 }
 
@@ -150,13 +215,13 @@ void loop() {
 
     case CONNECTING: {
       TxtStatus.setText("CONNECTING");
-      Serial.println("Connecting to WiFi...");
-      unsigned long wifiTimeout = millis();
-      WiFi.begin(ssid, password);
+      Serial.printf("Connecting to WiFi: %s\n", selectedSSID);
+      WiFi.begin(selectedSSID, password);
 
+      unsigned long wifiTimeout = millis();
       while (WiFi.status() != WL_CONNECTED && millis() - wifiTimeout < 10000) {
         delay(1000);
-        TxtSSID.setText("Connecting to WiFi...");
+        TxtSSID.setText("Connecting...");
       }
 
       if (WiFi.status() == WL_CONNECTED) {
@@ -175,59 +240,71 @@ void loop() {
     }
 
     case TRANSMITTING:
-      TxtStatus.setText("TRANSMITTING");
+    TxtStatus.setText("TRANSMITTING");
 
-      if (Serial1.available()) {
+    if (Serial1.available()) {
         String serialData = Serial1.readStringUntil('\n');
         if (!serialData.isEmpty()) {
-          TxtData.setText(serialData.c_str());
-          Serial.printf("Received data: %s\n", serialData.c_str());
+            // Tampilkan data penuh di TxtData
+            TxtData.setText(serialData.c_str());
+            Serial.printf("Received data: %s\n", serialData.c_str());
 
-          // Extract payload (pl) from serialData
-          String parts[6];
-          int index = 0;
-          while (serialData.indexOf('-') > 0 && index < 5) {
-            int pos = serialData.indexOf('-');
-            parts[index] = serialData.substring(0, pos);
-            serialData = serialData.substring(pos + 1);
-            index++;
-          }
-          parts[index] = serialData;
-
-          // Save only the payload (parts[4]) to buffer
-          if (bufferIndex < BUFFER_SIZE) {
-            payloadBuffer[bufferIndex++] = parts[4];
-          } else {
-            for (int i = 1; i < BUFFER_SIZE; i++) {
-              payloadBuffer[i - 1] = payloadBuffer[i];
+            // Simpan data penuh untuk pengiriman ke server
+            if (bufferIndex < BUFFER_SIZE) {
+                payloadBuffer[bufferIndex++] = serialData;
+            } else {
+                // Geser buffer jika penuh
+                for (int i = 1; i < BUFFER_SIZE; i++) {
+                    payloadBuffer[i - 1] = payloadBuffer[i];
+                }
+                payloadBuffer[BUFFER_SIZE - 1] = serialData;
             }
-            payloadBuffer[BUFFER_SIZE - 1] = parts[4];
-          }
-        }
-      }
 
-      if (client.connected() && shouldSendData && bufferIndex > 0) {
+            // Pisahkan payload dari data penuh
+            String parts[6];
+            int index = 0;
+            String tempData = serialData; // Salinan untuk parsing
+            while (tempData.indexOf('-') > 0 && index < 5) {
+                int pos = tempData.indexOf('-');
+                parts[index] = tempData.substring(0, pos);
+                tempData = tempData.substring(pos + 1);
+                index++;
+            }
+            parts[index] = tempData; // Payload ada di parts[4]
+
+            // Simpan payload ke buffer khusus pencetakan
+            if (!parts[4].isEmpty() && bufferIndex < BUFFER_SIZE) {
+                payloadBuffer[bufferIndex - 1] = parts[4]; // Simpan hanya payload
+            }
+        }
+    }
+
+    // Kirim data penuh ke server
+    if (client.connected() && shouldSendData && bufferIndex > 0) {
         String payload = payloadBuffer[bufferIndex - 1];
         Serial.printf("Sending data to server: %s\n", payload.c_str());
         if (client.println(payload)) {
-          TxtKirim.setText(payload.c_str());
+            TxtKirim.setText(payload.c_str()); // Tampilkan data penuh
         } else {
-          TxtKirim.setText("Send failed");
-          Serial.println("Send failed");
-          reconnect();
+            TxtKirim.setText("Send failed");
+            Serial.println("Send failed");
+            reconnect();
         }
-      }
+    }
 
-      static unsigned long lastCheck = 0;
-      if (millis() - lastCheck > 5000) {
+    // Periksa koneksi server
+    static unsigned long lastCheck = 0;
+    if (millis() - lastCheck > 5000) {
         lastCheck = millis();
         if (!client.connected()) {
-          TxtStatus.setText("Server disconnected.");
-          Serial.println("Server disconnected.");
-          reconnect();
+            TxtStatus.setText("Server disconnected.");
+            Serial.println("Server disconnected.");
+            reconnect();
         }
-      }
-      break;
+    }
+    break;
+
+
 
     case DISCONNECTED:
       TxtSSID.setText("DISCONNECTED");
@@ -238,23 +315,36 @@ void loop() {
 }
 
 void printLast10Data() {
+  // Ambil nilai jam dan rit dari Nextion
+  char jam[20];  // Array untuk menyimpan nilai jam
+  uint32_t rit;  // Menggunakan uint32_t untuk rit
+
+  // Mengambil nilai jam dari TxtJam (NexText)
+  TxtJam.getText(jam, sizeof(jam));
+
+  // Mengambil nilai rit dari nRit (NexNumber)
+  nRit.getValue(&rit);
+
+  // Mengatur format pencetakan
   printer.justify('C');
   printer.setSize('M');
   printer.println(unitName);
   printer.println("--------------------------");
+  
   printer.justify('L');
   printer.setSize('S');
   printer.println("TIME     RIT     PAYLOAD");
   printer.println("--------------------------");
 
+  // Mencetak data dengan jam, rit, dan payload
   for (int i = 0; i < BUFFER_SIZE; i++) {
     if (!payloadBuffer[i].isEmpty()) {
-      printer.printf("09:00    1       %s\n", payloadBuffer[i].c_str());
+      // Format untuk mencetak data yang lebih terstruktur
+      printer.printf("%s    %d       %s\n", jam, rit, payloadBuffer[i].c_str());
     }
   }
 
+  // Akhiri cetakan dan matikan printer
   printer.println("");
   printer.sleep();
 }
-
-//tambahan fungsi cetak dengan printer thermal di pin 14 dan 27
