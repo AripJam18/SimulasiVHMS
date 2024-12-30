@@ -1,6 +1,4 @@
-//#include <Messages.h>
 #include <stdlib.h> // Untuk fungsi random()
-
 #include <Messages.h>
 unsigned long previousMillis1 = 0;
 const long interval1 = 5000;
@@ -21,8 +19,8 @@ void setup() {
 
 void loop() {
   Messages::sendMessage(Serial2, previousMillis1, interval1);
-    getVHMS(); // Panggil fungsi untuk menghasilkan data acak
-    delay(1000);
+  getVHMS(); // Panggil fungsi untuk menghasilkan data acak
+  delay(1000);
 }
 
 // Fungsi untuk menghasilkan nilai acak dan memproses data seolah-olah dari sensor
@@ -62,31 +60,43 @@ void data_V(const uint8_t* buffer, size_t len, bool chkOk) {
     String dataString = "";
 
     // Menambahkan Front-Left suspension pressure
+    dataString += F("#");
     dataString += getPressureValue(buffer, 3);
-    dataString += "-"; // Tambahkan tanda pemisah
+    dataString += F("*-"); // Tambahkan tanda pemisah dan * di akhir
 
     // Menambahkan Front-Right suspension pressure
+    dataString += F("#");
     dataString += getPressureValue(buffer, 5);
-    dataString += "-"; // Tambahkan tanda pemisah
+    dataString += F("*-"); // Tambahkan tanda pemisah dan * di akhir
 
     // Menambahkan Rear-Left suspension pressure
+    dataString += F("#");
     dataString += getPressureValue(buffer, 7);
-    dataString += "-"; // Tambahkan tanda pemisah
+    dataString += F("*-"); // Tambahkan tanda pemisah dan * di akhir
 
     // Menambahkan Rear-Right suspension pressure
+    dataString += F("#");
     dataString += getPressureValue(buffer, 9);
-    dataString += "-"; // Tambahkan tanda pemisah
+    dataString += F("*-"); // Tambahkan tanda pemisah dan * di akhir
 
     // Menambahkan Payload
+    dataString += F("#");
     dataString += getPayloadValue(buffer, 13);
-    dataString += "-"; // Tambahkan tanda pemisah
+    dataString += F("*-"); // Tambahkan tanda pemisah dan * di akhir
 
     // Menambahkan Identitas Atau Nama Unit (Dumptruck)
-    dataString += F("HD78101KM");
+    dataString += F("#HD78101KM*");
 
-    // Cetak semua data dalam satu string
-    Serial2.println(dataString); // Kirim data ke Serial2
-    Serial.println("Data sent to ESP32: " + dataString); // Log data yang dikirim
+    // Bungkus dataString dengan Start dan End Frame
+    Serial2.print((char)STX); // Kirim Start Frame
+    Serial2.print(dataString); // Kirim data
+    Serial2.print((char)ETX); // Kirim End Frame
+
+    // Cetak data ke Serial Monitor untuk debugging
+    Serial.print(F("Data sent to ESP32: "));
+    Serial.print((char)STX);
+    Serial.print(dataString);
+    Serial.println((char)ETX);
   }
 }
 
@@ -109,3 +119,7 @@ String getPayloadValue(const uint8_t* buffer, size_t pos) {
   }
   return String(payloadValue, 1); // Format dengan 1 digit desimal
 }
+
+
+//tambah STK dan ETK
+//tambah "#" diawal setiap value dan "*" diakhir setiap value
